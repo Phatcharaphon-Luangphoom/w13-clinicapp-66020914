@@ -56,4 +56,3 @@ jobs:
           app-name: 'app-clinicapp-api-66020914'
           slot-name: 'Production'
           package: ./server
-          
