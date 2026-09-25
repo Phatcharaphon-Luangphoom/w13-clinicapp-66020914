@@ -33,7 +33,7 @@ jobs:
           output_location: "Build" # Built app content directory - optional
           ###### End of Repository/Build Configurations ######
         env:
-          VITE_API_BASE: app-clinicapp-api-66020914-hpgza9d3dba5fxba.southeastasia-01.azurewebsites.net
+          VITE_API_BASE: https://green-water-0ab97fe00.6.azurestaticapps.net
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
