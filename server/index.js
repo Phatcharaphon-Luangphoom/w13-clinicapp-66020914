@@ -1,92 +1,102 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import sql from 'mssql';
-import { getSqlPool } from './db.js';
+import { getPool } from './db.js';
 
 const app = express();
-const PORT = process.env.PORT || 8080;
-
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ ok: true, service: 'clinic-api' }));
-
-app.get('/doctors', async (_req, res, next) => {
-  try {
-    const pool = await getSqlPool();
-    const r = await pool.request()
-      .query('SELECT id, name, specialty FROM doctors ORDER BY name');
-    res.json(r.recordset);
-  } catch (e) { next(e); }
+// 1. Health Check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Trainer API is running' });
 });
 
-app.get('/appointments', async (_req, res, next) => {
+// 2. GET /trainers
+app.get('/trainers', async (req, res) => {
   try {
-    const pool = await getSqlPool();
-    const r = await pool.request().query(`
-      SELECT a.id, a.patient_name, a.slot, d.name AS doctor_name, d.specialty
-      FROM appointments a JOIN doctors d ON a.doctor_id = d.id
-      ORDER BY a.slot
-    `);
-    res.json(r.recordset);
-  } catch (e) { next(e); }
-});
-
-app.post('/appointments', async (req, res, next) => {
-  const { doctor_id, patient_name, slot } = req.body || {};
-  if (!doctor_id || !patient_name || !slot) {
-    return res.status(400).json({ error: 'doctor_id, patient_name, slot are required' });
-  }
-  try {
-    const pool = await getSqlPool();
-    const r = await pool.request()
-      .input('doctor_id', sql.Int, Number(doctor_id))
-      .input('patient_name', sql.NVarChar(200), String(patient_name))
-      .input('slot', sql.DateTime2, new Date(slot))
-      .query(`
-        INSERT INTO appointments (doctor_id, patient_name, slot)
-        OUTPUT INSERTED.id, INSERTED.doctor_id, INSERTED.patient_name, INSERTED.slot
-        VALUES (@doctor_id, @patient_name, @slot)
-      `);
-    res.status(201).json(r.recordset[0]);
-  } catch (e) { next(e); }
-});
-
-// delete appointment by id
-app.delete('/appointments/:id', async (req, res, next) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: 'invalid_id' });
-  }
-  try {
-    const pool = await getSqlPool();
-    const r = await pool.request()
-      .input('id', sql.Int, id)
-      .query('DELETE FROM appointments WHERE id = @id');
-    if (r.rowsAffected[0] === 0) {
-      return res.status(404).json({ error: 'not_found' });
+    const pool = await getPool();
+    const result = await pool.request().query('SELECT id, name, specialty FROM trainers ORDER BY id ASC');
+    res.json(result.recordset);
+  } catch (err) {
+    if (err.message === 'database_not_configured') {
+      return res.status(500).json({ error: 'database_not_configured' });
     }
-    res.json({ ok: true });
-  } catch (e) { next(e); }
-});
-
-app.use((err, _req, res, _next) => {
-  if (err.code === 'NO_DB_CONFIG') {
-    return res.status(503).json({
-      error: 'database_not_configured',
-      hint: 'Set AZURE_SQL_CONNECTION_STRING environment variable'
-    });
+    res.status(500).json({ error: err.message });
   }
-  console.error('unhandled', err);
-  res.status(500).json({ error: 'internal_error', message: err.message });
 });
 
-const isDirectRun = process.argv[1] && process.argv[1].endsWith('index.js');
-if (isDirectRun) {
-  app.listen(PORT, () => {
-    console.log(`clinic-api listening on :${PORT}`);
-  });
-}
- 
-export default app;
+// 3. GET /appointments
+app.get('/appointments', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request().query(`
+      SELECT a.id, a.trainer_id, t.name AS trainer_name, t.specialty, a.client_name, a.slot, a.created
+      FROM appointments a
+      JOIN trainers t ON a.trainer_id = t.id
+      ORDER BY a.slot DESC
+    `);
+    res.json(result.recordset);
+  } catch (err) {
+    if (err.message === 'database_not_configured') {
+      return res.status(500).json({ error: 'database_not_configured' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. POST /appointments
+app.post('/appointments', async (req, res) => {
+  const { trainer_id, client_name, slot } = req.body;
+  if (!trainer_id || !client_name || !slot) {
+    return res.status(400).json({ error: 'Missing required fields: trainer_id, client_name, slot' });
+  }
+
+  try {
+    const pool = await getPool();
+    const request = pool.request();
+    request.input('trainer_id', trainer_id);
+    request.input('client_name', client_name);
+    request.input('slot', slot);
+
+    await request.query(`
+      INSERT INTO appointments (trainer_id, client_name, slot)
+      VALUES (@trainer_id, @client_name, @slot)
+    `);
+
+    res.status(201).json({ message: 'Trainer appointment created successfully' });
+  } catch (err) {
+    if (err.message === 'database_not_configured') {
+      return res.status(500).json({ error: 'database_not_configured' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. DELETE /appointments/:id - ลบการนัดหมาย
+app.delete('/appointments/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const pool = await getPool();
+    const request = pool.request();
+    request.input('id', id);
+
+    const result = await request.query('DELETE FROM appointments WHERE id = @id');
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    res.json({ message: 'Appointment deleted successfully' });
+  } catch (err) {
+    if (err.message === 'database_not_configured') {
+      return res.status(500).json({ error: 'database_not_configured' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`trainer-api listening on :${PORT}`);
+});

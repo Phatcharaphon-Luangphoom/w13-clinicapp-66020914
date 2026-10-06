@@ -1,25 +1,12 @@
 import sql from 'mssql';
 
-let poolPromise = null;
+const connectionString = process.env.AZURE_SQL_CONNECTION_STRING;
 
-export function getSqlPool() {
-  const connectionString = process.env.AZURE_SQL_CONNECTION_STRING;
+export async function getPool() {
   if (!connectionString) {
-    const err = new Error('AZURE_SQL_CONNECTION_STRING is not set');
-    err.code = 'NO_DB_CONFIG';
-    throw err;
+    throw new Error('database_not_configured');
   }
-  if (!poolPromise) {
-    poolPromise = new sql.ConnectionPool(connectionString)
-      .connect()
-      .then(pool => {
-        pool.on('close', () => { poolPromise = null; });
-        return pool;
-      })
-      .catch(err => {
-        poolPromise = null;
-        throw err;
-      });
-  }
-  return poolPromise;
+  return await sql.connect(connectionString);
 }
+
+export { sql };
