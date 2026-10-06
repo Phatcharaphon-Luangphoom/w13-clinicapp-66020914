@@ -11,6 +11,7 @@ export default function App() {
   const [clientName, setClientName] = useState('');
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
+  const [duration, setDuration] = useState(1); // จำนวนชั่วโมงที่จอง
 
   const getTodayString = () => {
     const now = new Date();
@@ -93,6 +94,16 @@ export default function App() {
     return OPEN_HOURS.filter((h) => !booked.includes(h) && !isPastHour(iso, h));
   };
 
+  // เช็คว่าเริ่มที่ชั่วโมง h แล้วจองต่อเนื่อง dur ชั่วโมงได้หรือไม่
+  const canBook = (trainerId, iso, h, dur) => {
+    const booked = getBookedHours(trainerId, iso);
+    for (let i = 0; i < dur; i++) {
+      const hh = h + i;
+      if (!OPEN_HOURS.includes(hh) || booked.includes(hh) || isPastHour(iso, hh)) return false;
+    }
+    return true;
+  };
+
   const availDate = date || today;
   const weekDays = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
@@ -100,6 +111,53 @@ export default function App() {
     return toISO(d);
   });
   const trainerInForm = trainers.find((t) => String(t.id) === String(selectedTrainer));
+
+  // รวมคิวรายชั่วโมงที่ต่อเนื่องของคนเดียวกัน ให้แสดงเป็นการ์ดเดียว
+  const groupedAppts = (() => {
+    const items = appointments.map((a) => ({ a, p: parseSlot(a) }));
+    items.sort(
+      (x, y) =>
+        String(x.a.trainer_id).localeCompare(String(y.a.trainer_id)) ||
+        String(x.a.client_name).localeCompare(String(y.a.client_name)) ||
+        x.p.iso.localeCompare(y.p.iso) ||
+        (x.p.hour ?? 0) - (y.p.hour ?? 0)
+    );
+    const groups = [];
+    for (const { a, p } of items) {
+      const last = groups[groups.length - 1];
+      if (
+        last &&
+        p.iso &&
+        last.iso === p.iso &&
+        last.lastHour !== null &&
+        p.hour === last.lastHour + 1 &&
+        String(last.first.trainer_id) === String(a.trainer_id) &&
+        String(last.first.client_name) === String(a.client_name)
+      ) {
+        last.ids.push(a.id);
+        last.lastHour = p.hour;
+        last.count += 1;
+      } else {
+        groups.push({
+          first: a,
+          ids: [a.id],
+          iso: p.iso,
+          dateText: p.dateText,
+          timeText: p.timeText,
+          startHour: p.hour ?? 0,
+          lastHour: p.hour,
+          count: 1,
+          raw: p.raw
+        });
+      }
+    }
+    groups.forEach((g) => {
+      g.endText =
+        g.count > 1 && g.timeText ? `${pad2(g.lastHour + 1)}:${g.timeText.slice(3)}` : '';
+    });
+    groups.sort((x, y) => `${y.iso}${pad2(y.startHour)}`.localeCompare(`${x.iso}${pad2(x.startHour)}`));
+    return groups;
+  })();
 
   const fetchData = async () => {
     try {
@@ -138,59 +196,72 @@ export default function App() {
     }
 
     const bookHour = parseInt(time.split(':')[0], 10);
-    if (!OPEN_HOURS.includes(bookHour)) {
-      alert('เปิดให้จองเวลา 09:00 - 21:00 น. เท่านั้นครับ');
-      return;
-    }
-    if (getBookedHours(selectedTrainer, date).includes(bookHour)) {
-      alert('เทรนเนอร์ไม่ว่างในช่วงเวลานี้ กรุณาเลือกช่วงเวลาอื่นจากตารางเวลาว่างครับ');
-      return;
+    const minutes = time.split(':')[1] || '00';
+
+    for (let i = 0; i < duration; i++) {
+      const hh = bookHour + i;
+      if (!OPEN_HOURS.includes(hh)) {
+        alert('เปิดให้จองเวลา 09:00 - 21:00 น. เท่านั้น และต้องจองไม่เกินเวลาปิดครับ');
+        return;
+      }
+      if (getBookedHours(selectedTrainer, date).includes(hh)) {
+        alert(`เทรนเนอร์ไม่ว่างในช่วง ${pad2(hh)}:00 น. กรุณาเลือกเวลาหรือจำนวนชั่วโมงใหม่จากตารางเวลาว่างครับ`);
+        return;
+      }
     }
 
     try {
-      const payload = {
-        trainer_id: parseInt(selectedTrainer, 10),
-        client_name: clientName.trim(),
-        date: date, // YYYY-MM-DD
-        time: normalizeTime(time) // HH:mm:ss
-      };
+      // จองหลายชั่วโมง = สร้างคิวต่อเนื่องชั่วโมงละ 1 รายการ
+      for (let i = 0; i < duration; i++) {
+        const payload = {
+          trainer_id: parseInt(selectedTrainer, 10),
+          client_name: clientName.trim(),
+          date: date, // YYYY-MM-DD
+          time: `${pad2(bookHour + i)}:${minutes}:00` // HH:mm:ss
+        };
 
-      console.log('กำลังส่งข้อมูลไป Backend:', payload);
+        console.log('กำลังส่งข้อมูลไป Backend:', payload);
 
-      const res = await fetch(`${API_BASE}/appointments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+        const res = await fetch(`${API_BASE}/appointments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
 
-      if (res.ok) {
-        setClientName('');
-        setDate('');
-        setTime('');
-        fetchData();
-        alert('จองคิวสำเร็จ!');
-      } else {
-        const errorText = await res.text();
-        console.error('Backend Error Detail:', errorText);
-        alert(`บันทึกไม่ได้! เซิร์ฟเวอร์ตอบกลับมาว่า:\n${errorText}`);
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error('Backend Error Detail:', errorText);
+          await fetchData();
+          alert(`บันทึกไม่ได้! เซิร์ฟเวอร์ตอบกลับมาว่า:\n${errorText}`);
+          return;
+        }
       }
+
+      setClientName('');
+      setDate('');
+      setTime('');
+      setDuration(1);
+      fetchData();
+      alert(`จองคิวสำเร็จ! (${duration} ชั่วโมง)`);
     } catch (err) {
       console.error('Fetch Error:', err);
       alert('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้');
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!confirm('คุณต้องการลบรายการนัดหมายนี้ใช่หรือไม่?')) return;
+  const handleDelete = async (ids) => {
+    const list = Array.isArray(ids) ? ids : [ids];
+    const msg =
+      list.length > 1
+        ? `คุณต้องการยกเลิกคิวนี้ (${list.length} ชั่วโมง) ใช่หรือไม่?`
+        : 'คุณต้องการลบรายการนัดหมายนี้ใช่หรือไม่?';
+    if (!confirm(msg)) return;
 
     try {
-      const res = await fetch(`${API_BASE}/appointments/${id}`, {
-        method: 'DELETE'
-      });
-
-      if (res.ok) {
-        fetchData();
-      }
+      await Promise.all(
+        list.map((id) => fetch(`${API_BASE}/appointments/${id}`, { method: 'DELETE' }))
+      );
+      fetchData();
     } catch (err) {
       console.error(err);
     }
@@ -513,6 +584,12 @@ export default function App() {
           color: #94a3b8;
           cursor: not-allowed;
         }
+        .slot-btn.selected:disabled {
+          background: var(--primary-color);
+          border-color: var(--primary-color);
+          color: #fff;
+          cursor: default;
+        }
         .slot-note {
           font-size: 13px;
           color: var(--text-muted);
@@ -607,6 +684,22 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="form-group">
+                <label>ระยะเวลาที่จอง</label>
+                <select
+                  className="form-control"
+                  value={duration}
+                  onChange={(e) => setDuration(parseInt(e.target.value, 10))}
+                >
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>
+                      {n} ชั่วโมง
+                      {trainerInForm?.price ? ` (รวม ฿${trainerInForm.price * n})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <button type="submit" className="btn-submit">ยืนยันการนัดหมาย</button>
             </form>
           </div>
@@ -622,7 +715,7 @@ export default function App() {
             ) : (
               <>
                 <p className="slot-note">
-                  เทรนเนอร์: <strong>{trainerInForm.name}</strong> — เปิดรับ 09:00-21:00 น. ช่วงละ 1 ชม. กดเวลาที่ว่างเพื่อเลือกจอง
+                  เทรนเนอร์: <strong>{trainerInForm.name}</strong> — เปิดรับ 09:00-21:00 น. เลือกระยะเวลาในฟอร์ม แล้วกดเวลาเริ่มที่ว่าง
                 </p>
                 <div className="day-strip">
                   {weekDays.map((iso) => {
@@ -649,12 +742,15 @@ export default function App() {
                   {OPEN_HOURS.map((h) => {
                     const booked = getBookedHours(selectedTrainer, availDate).includes(h);
                     const past = isPastHour(availDate, h);
-                    const selected = date === availDate && time.startsWith(`${pad2(h)}:`);
+                    const ok = canBook(selectedTrainer, availDate, h, duration);
+                    const startH = parseInt(time, 10);
+                    const selected =
+                      date === availDate && !isNaN(startH) && h >= startH && h < startH + duration;
                     return (
                       <button
                         type="button"
                         key={h}
-                        disabled={booked || past}
+                        disabled={!ok && !selected}
                         className={`slot-btn${selected ? ' selected' : ''}`}
                         onClick={() => {
                           setDate(availDate);
@@ -662,7 +758,7 @@ export default function App() {
                         }}
                       >
                         {pad2(h)}:00 - {pad2(h + 1)}:00
-                        <small>{booked ? 'จองแล้ว' : past ? 'ผ่านไปแล้ว' : 'ว่าง'}</small>
+                        <small>{selected ? 'เลือกแล้ว' : booked ? 'จองแล้ว' : past ? 'ผ่านไปแล้ว' : ok ? 'ว่าง' : `ว่างไม่ถึง ${duration} ชม.`}</small>
                       </button>
                     );
                   })}
@@ -699,8 +795,10 @@ export default function App() {
               <p className="empty-text">เวิ้งว้าง... ยังไม่มีคิวจองในขณะนี้</p>
             ) : (
               <div className="appt-list">
-                {appointments.map((a) => (
-                  <div key={a.id} className="appt-card">
+                {groupedAppts.map((g) => {
+                  const a = g.first;
+                  return (
+                  <div key={g.ids.join('-')} className="appt-card">
                     <div className="appt-info">
                       <span className="client-tag">👤 {a.client_name}</span>
                       <span className="trainer-tag">
@@ -712,15 +810,17 @@ export default function App() {
                         </span>
                       )}
                       <span className="appt-time">
-                        🕒 {parseSlot(a).dateText || (parseSlot(a).raw ? String(parseSlot(a).raw) : 'ไม่ระบุวันที่')}
-                        {parseSlot(a).timeText ? ` เวลา ${parseSlot(a).timeText} น.` : ''}
+                        🕒 {g.dateText || (g.raw ? String(g.raw) : 'ไม่ระบุวันที่')}
+                        {g.timeText ? ` เวลา ${g.timeText}${g.endText ? ` - ${g.endText}` : ''} น.` : ''}
+                        {g.count > 1 ? ` (${g.count} ชม.)` : ''}
                       </span>
                     </div>
-                    <button className="btn-delete" onClick={() => handleDelete(a.id)}>
+                    <button className="btn-delete" onClick={() => handleDelete(g.ids)}>
                       ยกเลิกคิว
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
