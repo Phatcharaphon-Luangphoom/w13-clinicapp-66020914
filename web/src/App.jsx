@@ -55,7 +55,7 @@ export default function App() {
       if (t) [, h, mi] = t;
     }
 
-    if (!y) return { dateText: '', timeText: '', raw };
+    if (!y) return { dateText: '', timeText: '', iso: '', hour: null, raw };
 
     const dateText = new Date(+y, +mo - 1, +d).toLocaleDateString('th-TH', {
       day: 'numeric',
@@ -66,10 +66,40 @@ export default function App() {
       h !== undefined && mi !== undefined
         ? `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`
         : '';
-    return { dateText, timeText, raw };
+    const iso = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const hour = h !== undefined && h !== null ? parseInt(h, 10) : null;
+    return { dateText, timeText, iso, hour, raw };
   };
   const getTrainerPhone = (a) =>
     a.trainer_phone ?? trainers.find((t) => t.id === a.trainer_id)?.phone ?? '';
+
+  // ===== ตารางเวลาว่างของเทรนเนอร์ (ช่วงละ 1 ชม., เปิด 09:00-21:00) =====
+  const OPEN_HOURS = Array.from({ length: 12 }, (_, i) => i + 9);
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const toISO = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  const getBookedHours = (trainerId, iso) =>
+    appointments
+      .filter((a) => String(a.trainer_id) === String(trainerId))
+      .map(parseSlot)
+      .filter((p) => p.iso === iso && p.hour !== null)
+      .map((p) => p.hour);
+
+  const isPastHour = (iso, h) =>
+    iso < today || (iso === today && h <= new Date().getHours());
+
+  const getFreeHours = (trainerId, iso) => {
+    const booked = getBookedHours(trainerId, iso);
+    return OPEN_HOURS.filter((h) => !booked.includes(h) && !isPastHour(iso, h));
+  };
+
+  const availDate = date || today;
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    return toISO(d);
+  });
+  const trainerInForm = trainers.find((t) => String(t.id) === String(selectedTrainer));
 
   const fetchData = async () => {
     try {
@@ -104,6 +134,16 @@ export default function App() {
 
     if (selectedDateTime < currentDateTime) {
       alert('ไม่สามารถจองวันและเวลาย้อนหลังได้ กรุณาเลือกเวลาใหม่ครับ');
+      return;
+    }
+
+    const bookHour = parseInt(time.split(':')[0], 10);
+    if (!OPEN_HOURS.includes(bookHour)) {
+      alert('เปิดให้จองเวลา 09:00 - 21:00 น. เท่านั้นครับ');
+      return;
+    }
+    if (getBookedHours(selectedTrainer, date).includes(bookHour)) {
+      alert('เทรนเนอร์ไม่ว่างในช่วงเวลานี้ กรุณาเลือกช่วงเวลาอื่นจากตารางเวลาว่างครับ');
       return;
     }
 
@@ -402,6 +442,82 @@ export default function App() {
           border-color: var(--danger-color);
         }
 
+        .day-strip {
+          display: flex;
+          gap: 8px;
+          overflow-x: auto;
+          padding-bottom: 6px;
+          margin-bottom: 16px;
+        }
+        .day-chip {
+          flex: 0 0 auto;
+          min-width: 84px;
+          padding: 10px 12px;
+          border: 1.5px solid var(--border-color);
+          border-radius: 10px;
+          background: #fff;
+          cursor: pointer;
+          text-align: center;
+          font-family: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-main);
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .day-chip small {
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 500;
+        }
+        .day-chip.active {
+          border-color: var(--primary-color);
+          background: var(--primary-light);
+        }
+        .day-chip.full {
+          opacity: 0.55;
+        }
+        .slot-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+          gap: 10px;
+        }
+        .slot-btn {
+          padding: 10px 8px;
+          border-radius: 8px;
+          border: 1.5px solid #bbf7d0;
+          background: #f0fdf4;
+          color: #15803d;
+          font-weight: 600;
+          font-size: 13px;
+          font-family: inherit;
+          cursor: pointer;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          align-items: center;
+        }
+        .slot-btn small {
+          font-size: 11px;
+          font-weight: 500;
+        }
+        .slot-btn.selected {
+          background: var(--primary-color);
+          border-color: var(--primary-color);
+          color: #fff;
+        }
+        .slot-btn:disabled {
+          background: #f1f5f9;
+          border-color: var(--border-color);
+          color: #94a3b8;
+          cursor: not-allowed;
+        }
+        .slot-note {
+          font-size: 13px;
+          color: var(--text-muted);
+          margin: 0 0 12px 0;
+        }
         .empty-text {
           color: var(--text-muted);
           font-style: italic;
@@ -498,6 +614,62 @@ export default function App() {
 
         {/* คอลัมน์ขวา: เทรนเนอร์ & รายการนัดหมาย */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+
+          <div className="card">
+            <h2 className="section-title">🗓️ ตารางเวลาว่างของเทรนเนอร์</h2>
+            {!trainerInForm ? (
+              <p className="empty-text">เลือกเทรนเนอร์ในฟอร์มด้านซ้าย เพื่อดูวันและเวลาที่ว่าง</p>
+            ) : (
+              <>
+                <p className="slot-note">
+                  เทรนเนอร์: <strong>{trainerInForm.name}</strong> — เปิดรับ 09:00-21:00 น. ช่วงละ 1 ชม. กดเวลาที่ว่างเพื่อเลือกจอง
+                </p>
+                <div className="day-strip">
+                  {weekDays.map((iso) => {
+                    const free = getFreeHours(selectedTrainer, iso).length;
+                    const label = new Date(`${iso}T00:00:00`).toLocaleDateString('th-TH', {
+                      weekday: 'short',
+                      day: 'numeric',
+                      month: 'short'
+                    });
+                    return (
+                      <button
+                        type="button"
+                        key={iso}
+                        className={`day-chip${iso === availDate ? ' active' : ''}${free === 0 ? ' full' : ''}`}
+                        onClick={() => setDate(iso)}
+                      >
+                        {label}
+                        <small>{free === 0 ? 'เต็ม' : `ว่าง ${free} ช่วง`}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="slot-grid">
+                  {OPEN_HOURS.map((h) => {
+                    const booked = getBookedHours(selectedTrainer, availDate).includes(h);
+                    const past = isPastHour(availDate, h);
+                    const selected = date === availDate && time.startsWith(`${pad2(h)}:`);
+                    return (
+                      <button
+                        type="button"
+                        key={h}
+                        disabled={booked || past}
+                        className={`slot-btn${selected ? ' selected' : ''}`}
+                        onClick={() => {
+                          setDate(availDate);
+                          setTime(`${pad2(h)}:00`);
+                        }}
+                      >
+                        {pad2(h)}:00 - {pad2(h + 1)}:00
+                        <small>{booked ? 'จองแล้ว' : past ? 'ผ่านไปแล้ว' : 'ว่าง'}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
 
           <div className="card">
             <h2 className="section-title">💪 ข้อมูลเทรนเนอร์ผู้เชี่ยวชาญ</h2>
