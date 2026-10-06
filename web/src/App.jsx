@@ -6,10 +6,70 @@ export default function App() {
   const [trainers, setTrainers] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [error, setError] = useState(null);
-  
+
   const [selectedTrainer, setSelectedTrainer] = useState('');
   const [clientName, setClientName] = useState('');
-  const [slot, setSlot] = useState('');
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState('');
+
+  const getTodayString = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const today = getTodayString();
+
+  // แปลง "13:28" -> "13:28:00" ให้ SQL Server แปลงเป็นชนิด TIME ได้
+  const normalizeTime = (t) => (t && t.length === 5 ? `${t}:00` : t);
+
+  // ดึงค่าวันที่/เวลาจากหลายชื่อ field ที่ Backend อาจส่งมา
+  // Backend ส่งวันที่+เวลารวมในฟิลด์ slot -> แปลงเป็น { dateText, timeText }
+  const parseSlot = (a) => {
+    const raw = a.slot ?? a.appointment_datetime ?? a.datetime ?? null;
+    let y, mo, d, h, mi;
+
+    if (typeof raw === 'string') {
+      // รองรับ "2026-11-10T13:28:00.000Z", "2026-11-10 13:28:00" ฯลฯ
+      const m = raw.match(/(\d{4})-(\d{2})-(\d{2})(?:[T\s]+(\d{1,2}):(\d{2}))?/);
+      if (m) {
+        [, y, mo, d, h, mi] = m;
+      }
+    } else if (raw) {
+      const dt = new Date(raw);
+      if (!isNaN(dt)) {
+        y = dt.getUTCFullYear();
+        mo = dt.getUTCMonth() + 1;
+        d = dt.getUTCDate();
+        h = dt.getUTCHours();
+        mi = dt.getUTCMinutes();
+      }
+    }
+
+    // fallback ถ้า API ส่งแยก date / time มา
+    if (!y && a.date) {
+      const m = String(a.date).match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (m) [, y, mo, d] = m;
+      const t = String(a.time || '').match(/(\d{1,2}):(\d{2})/);
+      if (t) [, h, mi] = t;
+    }
+
+    if (!y) return { dateText: '', timeText: '', raw };
+
+    const dateText = new Date(+y, +mo - 1, +d).toLocaleDateString('th-TH', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+    const timeText =
+      h !== undefined && mi !== undefined
+        ? `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`
+        : '';
+    return { dateText, timeText, raw };
+  };
+  const getTrainerPhone = (a) =>
+    a.trainer_phone ?? trainers.find((t) => t.id === a.trainer_id)?.phone ?? '';
 
   const fetchData = async () => {
     try {
@@ -21,6 +81,7 @@ export default function App() {
       const resAppts = await fetch(`${API_BASE}/appointments`);
       if (resAppts.ok) {
         const apptsData = await resAppts.json();
+        console.log('appointments จาก API:', apptsData);
         setAppointments(apptsData);
       }
       setError(null);
@@ -35,26 +96,47 @@ export default function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedTrainer || !clientName || !slot) return;
+    if (!selectedTrainer || !clientName || !date || !time) return;
+
+    // ตรวจสอบวันเวลาย้อนหลัง
+    const selectedDateTime = new Date(`${date}T${time}`);
+    const currentDateTime = new Date();
+
+    if (selectedDateTime < currentDateTime) {
+      alert('ไม่สามารถจองวันและเวลาย้อนหลังได้ กรุณาเลือกเวลาใหม่ครับ');
+      return;
+    }
 
     try {
+      const payload = {
+        trainer_id: parseInt(selectedTrainer, 10),
+        client_name: clientName.trim(),
+        date: date, // YYYY-MM-DD
+        time: normalizeTime(time) // HH:mm:ss
+      };
+
+      console.log('กำลังส่งข้อมูลไป Backend:', payload);
+
       const res = await fetch(`${API_BASE}/appointments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trainer_id: parseInt(selectedTrainer),
-          client_name: clientName,
-          slot: new Date(slot).toISOString()
-        })
+        body: JSON.stringify(payload)
       });
 
       if (res.ok) {
         setClientName('');
-        setSlot('');
+        setDate('');
+        setTime('');
         fetchData();
+        alert('จองคิวสำเร็จ!');
+      } else {
+        const errorText = await res.text();
+        console.error('Backend Error Detail:', errorText);
+        alert(`บันทึกไม่ได้! เซิร์ฟเวอร์ตอบกลับมาว่า:\n${errorText}`);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Fetch Error:', err);
+      alert('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้');
     }
   };
 
@@ -78,201 +160,238 @@ export default function App() {
     <div className="app-container">
       <style>{`
         :root {
-          --primary-color: #10b981;
-          --primary-hover: #059669;
-          --danger-color: #f43f5e;
-          --danger-hover: #e11d48;
-          --bg-color: #ecfdf5;
+          --primary-color: #f97316;
+          --primary-hover: #ea580c;
+          --primary-light: #ffedd5;
+          --danger-color: #ef4444;
+          --danger-hover: #dc2626;
+          --bg-color: #f8fafc;
           --card-bg: #ffffff;
-          --text-main: #064e3b;
-          --text-muted: #4b5563;
-          --border-color: #d1fae5;
+          --text-main: #0f172a;
+          --text-muted: #64748b;
+          --border-color: #e2e8f0;
+          --dark-bg: #1e293b;
         }
         body {
           margin: 0;
           background-color: var(--bg-color);
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         .app-container {
           min-height: 100vh;
           padding: 30px 20px;
-          max-width: 1100px;
+          max-width: 1200px;
           margin: 0 auto;
           box-sizing: border-box;
         }
+
         .header-banner {
           text-align: center;
-          background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+          background: linear-gradient(135deg, var(--dark-bg) 0%, #0f172a 100%);
           color: white;
-          padding: 24px;
+          padding: 32px 24px;
           border-radius: 16px;
-          margin-bottom: 24px;
-          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+          margin-bottom: 30px;
+          box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+          border-bottom: 4px solid var(--primary-color);
         }
         .header-banner h1 {
           margin: 0;
-          font-size: 28px;
+          font-size: 32px;
           font-weight: 800;
+          letter-spacing: -0.5px;
+        }
+        .header-banner h1 span {
+          color: var(--primary-color);
         }
         .header-banner p {
-          margin: 6px 0 0 0;
-          opacity: 0.9;
-          font-size: 14px;
+          margin: 8px 0 0 0;
+          color: #94a3b8;
+          font-size: 15px;
         }
+
         .dashboard-grid {
           display: grid;
-          grid-template-columns: 1fr 1.2fr;
-          gap: 24px;
+          grid-template-columns: 360px 1fr;
+          gap: 28px;
           align-items: start;
         }
-        @media (max-width: 768px) {
+        @media (max-width: 900px) {
           .dashboard-grid {
             grid-template-columns: 1fr;
           }
         }
+
         .card {
           background-color: var(--card-bg);
-          border-radius: 14px;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+          border-radius: 16px;
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
           padding: 24px;
           border: 1px solid var(--border-color);
         }
+        .sticky-card {
+          position: sticky;
+          top: 30px;
+        }
+
         .section-title {
           color: var(--text-main);
           font-size: 18px;
           font-weight: 700;
           margin-top: 0;
-          margin-bottom: 18px;
+          margin-bottom: 20px;
           display: flex;
           align-items: center;
-          gap: 8px;
-          border-bottom: 2px solid var(--border-color);
-          padding-bottom: 10px;
+          gap: 10px;
         }
-        .error-box {
-          background-color: #fee2e2;
-          color: #b91c1c;
-          padding: 12px 16px;
-          border-radius: 8px;
-          margin-bottom: 20px;
-          font-weight: 500;
-          border: 1px solid #f87171;
-        }
+
         .form-group {
           display: flex;
           flex-direction: column;
-          gap: 6px;
-          margin-bottom: 16px;
+          gap: 8px;
+          margin-bottom: 18px;
         }
         .form-group label {
           font-weight: 600;
           color: var(--text-main);
-          font-size: 13px;
+          font-size: 14px;
         }
         .form-control {
-          padding: 10px 14px;
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
+          padding: 12px 14px;
+          border: 1.5px solid var(--border-color);
+          border-radius: 10px;
           font-size: 14px;
-          transition: border-color 0.2s;
+          transition: all 0.2s;
           font-family: inherit;
-          background-color: #f0fdf4;
+          background-color: #f8fafc;
           color: var(--text-main);
         }
         .form-control:focus {
           outline: none;
           border-color: var(--primary-color);
-          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+          background-color: #fff;
+          box-shadow: 0 0 0 4px var(--primary-light);
         }
         .btn-submit {
           background-color: var(--primary-color);
           color: white;
           border: none;
-          padding: 12px;
-          border-radius: 8px;
-          font-size: 15px;
+          padding: 14px;
+          border-radius: 10px;
+          font-size: 16px;
           font-weight: 600;
           cursor: pointer;
-          transition: background-color 0.2s;
-          margin-top: 6px;
+          transition: background-color 0.2s, transform 0.1s;
+          margin-top: 8px;
+          width: 100%;
         }
         .btn-submit:hover {
           background-color: var(--primary-hover);
         }
+        .btn-submit:active {
+          transform: scale(0.98);
+        }
+
         .trainer-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+          gap: 16px;
+        }
+        .trainer-card {
+          background-color: #fff;
+          border: 1px solid var(--border-color);
+          border-left: 4px solid var(--primary-color);
+          padding: 16px;
+          border-radius: 10px;
           display: flex;
           flex-direction: column;
           gap: 8px;
-          margin-top: 20px;
+          transition: transform 0.2s;
         }
-        .trainer-badge-card {
-          background-color: #f0fdf4;
-          border: 1px dashed var(--primary-color);
-          padding: 10px 12px;
-          border-radius: 8px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
+        .trainer-card:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
         .trainer-name {
-          font-weight: 600;
+          font-weight: 700;
           color: var(--text-main);
-          font-size: 14px;
+          font-size: 15px;
         }
         .trainer-spec {
           color: var(--primary-hover);
           font-size: 12px;
           font-weight: 600;
-          background-color: #d1fae5;
-          padding: 3px 8px;
-          border-radius: 12px;
+          background-color: var(--primary-light);
+          padding: 4px 10px;
+          border-radius: 20px;
+          display: inline-block;
+          width: fit-content;
         }
+        .trainer-details {
+          display: flex;
+          justify-content: space-between;
+          font-size: 13px;
+          color: var(--text-muted);
+          margin-top: auto;
+          padding-top: 10px;
+          border-top: 1px dashed var(--border-color);
+        }
+
         .appt-list {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 14px;
         }
         .appt-card {
-          background-color: #ffffff;
+          background-color: #f8fafc;
           border: 1px solid var(--border-color);
-          padding: 14px 16px;
-          border-radius: 10px;
+          padding: 16px 20px;
+          border-radius: 12px;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          transition: transform 0.1s ease, box-shadow 0.1s ease;
+          transition: all 0.2s ease;
         }
         .appt-card:hover {
-          transform: translateY(-2px);
+          background-color: #fff;
+          border-color: #cbd5e1;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
         }
         .appt-info {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 6px;
         }
         .client-tag {
-          font-size: 15px;
+          font-size: 16px;
           font-weight: 700;
           color: var(--text-main);
         }
         .trainer-tag {
-          font-size: 13px;
+          font-size: 14px;
           color: var(--text-muted);
+          display: flex;
+          align-items: center;
+          gap: 6px;
         }
         .appt-time {
-          font-size: 12px;
+          font-size: 14px;
           color: var(--primary-hover);
           font-weight: 600;
-          margin-top: 2px;
+          background-color: var(--primary-light);
+          padding: 4px 10px;
+          border-radius: 6px;
+          display: inline-block;
+          width: fit-content;
+          margin-top: 4px;
         }
         .btn-delete {
-          background-color: #ffe4e6;
+          background-color: #fff;
           color: var(--danger-color);
-          border: 1px solid #fecdd3;
-          padding: 6px 12px;
-          border-radius: 6px;
-          font-size: 12px;
+          border: 1.5px solid #fecaca;
+          padding: 8px 14px;
+          border-radius: 8px;
+          font-size: 13px;
           font-weight: 600;
           cursor: pointer;
           transition: all 0.2s;
@@ -280,111 +399,160 @@ export default function App() {
         .btn-delete:hover {
           background-color: var(--danger-color);
           color: white;
+          border-color: var(--danger-color);
         }
+
         .empty-text {
           color: var(--text-muted);
           font-style: italic;
           text-align: center;
-          padding: 30px 0;
+          padding: 40px 0;
+          background-color: #f8fafc;
+          border-radius: 10px;
+          border: 1px dashed #cbd5e1;
+        }
+        .error-box {
+          background-color: #fef2f2;
+          color: #b91c1c;
+          padding: 14px 20px;
+          border-radius: 10px;
+          margin-bottom: 24px;
+          font-weight: 500;
+          border: 1px solid #fca5a5;
+          display: flex;
+          align-items: center;
+          gap: 10px;
         }
       `}</style>
 
       {/* Header Banner */}
       <div className="header-banner">
-        <h1>🏋️ FitGym — Trainer Booking Center</h1>
-        <p>ระบบจองเทรนเนอร์ส่วนตัวออนไลน์</p>
+        <h1>🏋️ <span>FitGym</span> Booking</h1>
+        <p>ระบบจัดการและจองคิวเทรนเนอร์ส่วนตัว</p>
       </div>
 
       {error === 'database_not_configured' && (
         <div className="error-box">
-          ⚠️ <strong>Error:</strong> Database is not configured properly.
+          <span>⚠️</span> <strong>ระบบยังไม่ได้เชื่อมต่อฐานข้อมูล:</strong> กรุณาตรวจสอบการตั้งค่า Database
         </div>
       )}
 
-      {/* 2-Column Dashboard Layout */}
       <div className="dashboard-grid">
-        
-        {/* คอลัมน์ซ้าย: ฟอร์มจอง + รายชื่อเทรนเนอร์ */}
-        <div className="card">
-          <h2 className="section-title">📅 จองเทรนเนอร์ส่วนตัว</h2>
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column' }}>
-            <div className="form-group">
-              <label>เลือกเทรนเนอร์</label>
-              <select className="form-control" value={selectedTrainer} onChange={(e) => setSelectedTrainer(e.target.value)} required>
-                <option value="">-- เลือกเทรนเนอร์ --</option>
-                {trainers.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.specialty})
-                  </option>
-                ))}
-              </select>
-            </div>
 
-            <div className="form-group">
-              <label>ชื่อลูกค้า / ผู้รับการฝึก</label>
-              <input
-                type="text"
-                className="form-control"
-                placeholder="กรอกชื่อ-นามสกุล"
-                value={clientName}
-                onChange={(e) => setClientName(e.target.value)}
-                required
-              />
-            </div>
+        {/* คอลัมน์ซ้าย: ฟอร์มจอง */}
+        <div>
+          <div className="card sticky-card">
+            <h2 className="section-title">📅 นัดหมายเทรนเนอร์</h2>
+            <form onSubmit={handleSubmit}>
+              <div className="form-group">
+                <label>เทรนเนอร์ที่ต้องการ</label>
+                <select className="form-control" value={selectedTrainer} onChange={(e) => setSelectedTrainer(e.target.value)} required>
+                  <option value="">-- เลือกเทรนเนอร์ --</option>
+                  {trainers.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.specialty})
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="form-group">
-              <label>วันที่และเวลาที่ต้องการฝึก</label>
-              <input
-                type="datetime-local"
-                className="form-control"
-                value={slot}
-                onChange={(e) => setSlot(e.target.value)}
-                required
-              />
-            </div>
+              <div className="form-group">
+                <label>ชื่อผู้รับการฝึก (สมาชิก)</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="กรอกชื่อ-นามสกุล"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  required
+                />
+              </div>
 
-            <button type="submit" className="btn-submit">ยืนยันการจอง</button>
-          </form>
-
-          {/* รายชื่อเทรนเนอร์ทั้งหมด */}
-          <h2 className="section-title" style={{ marginTop: '28px' }}>💪 รายชื่อเทรนเนอร์</h2>
-          {trainers.length === 0 ? (
-            <p className="empty-text">(ไม่พบข้อมูลเทรนเนอร์)</p>
-          ) : (
-            <div className="trainer-grid">
-              {trainers.map((t) => (
-                <div key={t.id} className="trainer-badge-card">
-                  <span className="trainer-name">{t.name}</span>
-                  <span className="trainer-spec">{t.specialty}</span>
+              <div className="form-group">
+                <label>วันที่และเวลา</label>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={date}
+                    min={today}
+                    onChange={(e) => setDate(e.target.value)}
+                    required
+                    style={{ flex: 1 }}
+                  />
+                  <input
+                    type="time"
+                    className="form-control"
+                    value={time}
+                    onChange={(e) => setTime(e.target.value)}
+                    required
+                    style={{ flex: 1 }}
+                  />
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+
+              <button type="submit" className="btn-submit">ยืนยันการนัดหมาย</button>
+            </form>
+          </div>
         </div>
 
-        {/* คอลัมน์ขวา: รายการนัดหมายทั้งหมด */}
-        <div className="card">
-          <h2 className="section-title">📋 ตารางการนัดหมายทั้งหมด</h2>
-          {appointments.length === 0 ? (
-            <p className="empty-text">ยังไม่มีรายการนัดหมายในระบบ</p>
-          ) : (
-            <div className="appt-list">
-              {appointments.map((a) => (
-                <div key={a.id} className="appt-card">
-                  <div className="appt-info">
-                    <span className="client-tag">👤 {a.client_name}</span>
-                    <span className="trainer-tag">🏋️ เทรนเนอร์: {a.trainer_name}</span>
-                    <span className="appt-time">
-                      📅 {new Date(a.slot).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}
-                    </span>
+        {/* คอลัมน์ขวา: เทรนเนอร์ & รายการนัดหมาย */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+
+          <div className="card">
+            <h2 className="section-title">💪 ข้อมูลเทรนเนอร์ผู้เชี่ยวชาญ</h2>
+            {trainers.length === 0 ? (
+              <p className="empty-text">ยังไม่มีข้อมูลเทรนเนอร์ในระบบ</p>
+            ) : (
+              <div className="trainer-grid">
+                {trainers.map((t) => (
+                  <div key={t.id} className="trainer-card">
+                    <span className="trainer-name">{t.name}</span>
+                    <span className="trainer-spec">{t.specialty}</span>
+                    <div className="trainer-details">
+                      <span>📞 {t.phone || '-'}</span>
+                      <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>
+                        {t.price ? `฿${t.price}/ชม.` : '-'}
+                      </span>
+                    </div>
                   </div>
-                  <button className="btn-delete" onClick={() => handleDelete(a.id)}>
-                    ลบรายการ
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <h2 className="section-title">📋 ตารางคิวการฝึกทั้งหมด</h2>
+            {appointments.length === 0 ? (
+              <p className="empty-text">เวิ้งว้าง... ยังไม่มีคิวจองในขณะนี้</p>
+            ) : (
+              <div className="appt-list">
+                {appointments.map((a) => (
+                  <div key={a.id} className="appt-card">
+                    <div className="appt-info">
+                      <span className="client-tag">👤 {a.client_name}</span>
+                      <span className="trainer-tag">
+                        <span>🏋️</span> เทรนเนอร์: {a.trainer_name}
+                      </span>
+                      {getTrainerPhone(a) && (
+                        <span className="trainer-tag">
+                          <span>📞</span> เบอร์ติดต่อ: {getTrainerPhone(a)}
+                        </span>
+                      )}
+                      <span className="appt-time">
+                        🕒 {parseSlot(a).dateText || (parseSlot(a).raw ? String(parseSlot(a).raw) : 'ไม่ระบุวันที่')}
+                        {parseSlot(a).timeText ? ` เวลา ${parseSlot(a).timeText} น.` : ''}
+                      </span>
+                    </div>
+                    <button className="btn-delete" onClick={() => handleDelete(a.id)}>
+                      ยกเลิกคิว
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
 
       </div>
